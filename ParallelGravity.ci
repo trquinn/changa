@@ -90,6 +90,8 @@ mainmodule ParallelGravity {
   };
 
   message ParticleShuffleMsg {
+    double loads[];
+    unsigned int parts_per_phase[];
     GravityParticle particles[];
     extraSPHData pGas[];
     extraStarData pStar[];
@@ -138,7 +140,9 @@ mainmodule ParallelGravity {
   PUPable Cool2OutputParams;
   PUPable OxOutputParams;
   PUPable FeOutputParams;
+  PUPable MetalsOutputParams;
   PUPable MFormOutputParams;
+  PUPable TimeFormOutputParams;
   PUPable coolontimeOutputParams;
   PUPable ESNRateOutputParams;
   PUPable DtOutputParams;

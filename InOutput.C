@@ -836,6 +836,10 @@ TreePiece::oneNodeWrite(int iIndex, // Index of Treepiece
     myStarParticles = pStar;
     nStartWrite = iPrevOffset;
     if(iIndex == 0) {
+        // Create and truncate output file.    
+        FILE *fp = CmiFopen(filename.c_str(), "w");
+        CmiFclose(fp);
+        
 	Tipsy::header tipsyHeader;
 
 	tipsyHeader.time = dTime;
@@ -1106,8 +1110,8 @@ void TreePiece::ioShuffle(CkReductionMsg *msg)
 		    nStarOut++;
 		}
 	    ParticleShuffleMsg *shuffleMsg
-		= new (nPartOut, nGasOut, nStarOut)
-		ParticleShuffleMsg(nPartOut, nGasOut, nStarOut, 0.0);
+		= new (0, 0, nPartOut, nGasOut, nStarOut)
+		ParticleShuffleMsg(0, nPartOut, nGasOut, nStarOut, 0.0);
 	    int iGasOut = 0;
 	    int iStarOut = 0;
 	    GravityParticle *pPartOut = shuffleMsg->particles;
@@ -1760,7 +1764,7 @@ void TreePiece::outputBinary(OutputParams& params, // specifies
                       nOutDark++;
                       }
                   if(myParticles[i].iType & TYPE_STAR) {
-                      avOutDark[nOutStar] = params.vValue(&myParticles[i]);
+                      avOutStar[nOutStar] = params.vValue(&myParticles[i]);
                       nOutStar++;
                       }
                   }
