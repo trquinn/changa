@@ -229,7 +229,7 @@ dist:
 	rm -Rf $(TARGET)-$(VERSION)
 
 clean:
-	rm -f core* $(OBJECTS) *~ $(TARGET) *.decl.h *.def.h charmrun conv-host 
+	rm -f core* $(OBJECTS) *~ $(TARGET) *.decl.h *.def.h charmrun conv-host Makefile.dep
 	cd $(STRUCTURES_PATH); $(MAKE) clean
 
 ref-clean:
