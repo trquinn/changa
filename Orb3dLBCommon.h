@@ -15,6 +15,26 @@
 #include "CentralLB.h"
 #define  ORB3DLB_NOTOPO_DEBUG
 // #define  ORB3DLB_NOTOPO_DEBUG CkPrintf
+
+/// @brief Hold information about Pe load and number of objects.
+class PeInfo {
+  public:
+  int idx;
+  double load;
+  double items;
+  PeInfo(int id, double ld, int it) : idx(id), load(ld), items(it) {}
+};
+
+/// @brief Utility class for sorting processor loads.
+class ProcLdGreater {
+  public:
+  bool operator()(PeInfo& p1, PeInfo& p2) {
+    // This can be done based on load or number of tps assigned to a PE
+    return (p1.load > p2.load);
+  }
+};
+
+/// @brief Common methods among Orb3d class load balancers.
 class Orb3dCommon{
   // pointer to stats->to_proc
   protected:		
@@ -23,8 +43,6 @@ class Orb3dCommon{
 
     CkVec<float> procload;
 
-    int nrecvd;
-    bool haveTPCentroids;
     /// Take into account memory constraints by limiting the number of pieces
     /// per processor.
     double maxPieceProc;
@@ -32,8 +50,59 @@ class Orb3dCommon{
     /// index of first processor of the group we are considering
     int nextProc;
 
+    // Greedy strategy to assign TreePieces to PEs on a node.
+    void orbPePartition(vector<Event> *events, vector<OrbObject> &tp, int node,
+        BaseLB::LDStats *stats) {
 
-    void orbPartition(vector<Event> *events, OrientedBox<float> &box, int nprocs, vector<OrbObject> & tp, BaseLB::LDStats *stats){
+      std::vector<PeInfo> peinfo;
+      float totalLoad = 0.0;
+      int firstProc = CkNodeFirst(node);
+      int lastProc = firstProc + CkNodeSize(node) - 1;
+      for (int i = firstProc; i <= lastProc; i++) {
+        peinfo.push_back(PeInfo(i, 0.0, 0));
+      }
+      // Make a heap of processors belonging to this node
+      std::make_heap(peinfo.begin(), peinfo.end(), ProcLdGreater());
+
+      int nextProc;
+      for(int i = 0; i < events[XDIM].size(); i++){
+        Event &ev = events[XDIM][i];
+        OrbObject &orb = tp[ev.owner];
+
+        // Pop the least loaded PE from the heap and assign TreePiece to it
+        PeInfo p = peinfo.front();
+        pop_heap(peinfo.begin(), peinfo.end(), ProcLdGreater());
+        peinfo.pop_back();
+
+        nextProc = p.idx;
+
+        if(orb.numParticles > 0){
+          (*mapping)[orb.lbindex] = nextProc;
+          procload[nextProc] += ev.load;
+          p.load += ev.load;
+          p.items += 1;
+          totalLoad += ev.load;
+        } else{
+          int fromPE = (*from)[orb.lbindex];
+          procload[fromPE] += ev.load;
+        }
+
+        peinfo.push_back(p);
+        push_heap(peinfo.begin(), peinfo.end(), ProcLdGreater());
+      }
+    }
+
+/// @brief Recursively partition treepieces among processors by
+/// bisecting the load in orthogonal directions.
+/// @param events Array of three (1 per dimension) Event vectors.
+/// These are separate in each dimension for easy sorting.
+/// @param box Spatial bounding box
+/// @param nprocs Number of processors over which to partition the
+/// Events. N.B. if node_partition is true, then this is the number of nodes.
+/// @param tp Vector of TreePiece data.
+    void orbPartition(vector<Event> *events, OrientedBox<float> &box, int nprocs,
+        vector<OrbObject> & tp, BaseLB::LDStats *stats,
+        bool node_partition=false){
 
       ORB3DLB_NOTOPO_DEBUG("partition events %d %d %d nprocs %d\n", 
           events[XDIM].size(),
@@ -50,22 +119,37 @@ class Orb3dCommon{
 
       if(nprocs == 1){
         ORB3DLB_NOTOPO_DEBUG("base: assign %d tps to proc %d\n", numEvents, nextProc);
-        // direct assignment of tree pieces to processors
-        //if(numEvents > 0) CkAssert(nprocs != 0);
-        float totalLoad = 0.0;
-        for(int i = 0; i < events[XDIM].size(); i++){
-          Event &ev = events[XDIM][i];
-          OrbObject &orb = tp[ev.owner];
-          if(orb.numParticles > 0){
-            (*mapping)[orb.lbindex] = nextProc;
-            totalLoad += ev.load;
-          }
-          else{
-            int fromPE = (*from)[orb.lbindex];
-            procload[fromPE] += ev.load;
-          }
+        if (!stats->procs[nextProc].available) {
+          nextProc++;
+          return;
         }
-        procload[nextProc] += totalLoad;
+
+        // If we are doing orb partition at the node level, then call
+        // orbPePartition to assign the treepieces to the PEs belonging to the node.
+        if (node_partition) {
+          orbPePartition(events, tp, nextProc, stats);
+        } else {
+          // direct assignment of tree pieces to processors
+          //if(numEvents > 0) CkAssert(nprocs != 0);
+          float totalLoad = 0.0;
+          for(int i = 0; i < events[XDIM].size(); i++){
+            Event &ev = events[XDIM][i];
+            OrbObject &orb = tp[ev.owner];
+            if(orb.numParticles > 0){
+              (*mapping)[orb.lbindex] = nextProc;
+              totalLoad += ev.load;
+            }
+            else{
+              int fromPE = (*from)[orb.lbindex];
+              if (fromPE < 0 || fromPE >= procload.size()) {
+                CkPrintf("[%d] trying to access fromPe %d nprocs %d\n", CkMyPe(), fromPE, procload.size());
+                CkAbort("Trying to access a PE which is outside the range\n");
+              }
+              procload[fromPE] += ev.load;
+            }
+          }
+          procload[nextProc] += totalLoad;
+        }
 
         if(numEvents > 0) nextProc++;
         return;
@@ -211,16 +295,31 @@ class Orb3dCommon{
         //events[i].free();
         vector<Event>().swap(events[i]);
       }
-      orbPartition(leftEvents,leftBox,nlprocs,tp, stats);
-      orbPartition(rightEvents,rightBox,nrprocs,tp, stats);
+      orbPartition(leftEvents,leftBox,nlprocs,tp, stats, node_partition);
+      orbPartition(rightEvents,rightBox,nrprocs,tp, stats, node_partition);
     }
 
-    void orbPrepare(vector<Event> *tpEvents, OrientedBox<float> &box, int numobjs, BaseLB::LDStats * stats){
+/// @brief Prepare structures for the ORB partition.
+/// @param tpEvents Array of 3 (1 per dimension) Event vectors.
+/// @param box Reference to bounding box (set here).
+/// @param numobjs Number of tree pieces to partition.
+/// @param stats Data from the load balancing framework.
+/// @param node_partition Are we partitioning on nodes.
+    void orbPrepare(vector<Event> *tpEvents, OrientedBox<float> &box, int
+    numobjs, BaseLB::LDStats * stats, bool node_partition=false){
 
       int nmig = stats->n_migrateobjs;
       if(dMaxBalance < 1.0)
         dMaxBalance = 1.0;
-      maxPieceProc = dMaxBalance*nmig/stats->count;
+
+      // If using node based orb partition, then the maxPieceProc is total
+      // migratable objs / total number of node.
+      if (node_partition) {
+        maxPieceProc = dMaxBalance * nmig / CkNumNodes();
+      } else {
+        maxPieceProc = dMaxBalance*nmig/stats->count;
+      }
+
       if(maxPieceProc < 1.0)
         maxPieceProc = 1.01;
 
@@ -434,7 +533,14 @@ class Orb3dCommon{
 
     }
 
-#define LOAD_EQUAL_TOLERANCE 1.02
+/// @brief Given a vector of Events, find a split that partitions them
+/// into two partitions with a given ratio of loads.
+/// @param events Vector of Events to split
+/// @param ratio Target ratio of loads in left partition to total load.
+/// @param bglp Background load on the left processors.
+/// @param bgrp Background load on the right processors.
+/// @return Starting index of right partition.
+///
     int partitionRatioLoad(vector<Event> &events, float ratio, float bglp, float bgrp){
 
       float approxBgPerEvent = (bglp + bgrp) / events.size();
